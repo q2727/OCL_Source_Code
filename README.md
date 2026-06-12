@@ -1,21 +1,57 @@
-# Datasets
-All 12 datasets used in `Categorical Data Clustering via Value Order Estimated Distance Metric Learning` can be found in the `Data` folder.  Additionally, six supplementary datasets are included in the `Supp_data` folder.
+# OCL Python
 
-# Code information
+This repository contains the Python implementation of OCL for categorical data clustering and the currently supported reproduction experiments for `Categorical Data Clustering via Value Order Estimated Distance Metric Learning`.
 
-All code is written in Matlab 2022a. Each section serves the following purpose:
+## Contents
 
-- The `Metrics` folder contains code for evaluating clustering performance.
-- The `OCL_alg` folder details the code of the OCL algorithm.
+- `src/ocl_python/`: Python package for data loading, metrics, OCL, and the supported `KMD` baseline.
+- `OCL_Source_Code/Data/`: 12 benchmark `.mat` datasets used by the current main experiment run.
+- `OCL_Source_Code/Supp_data/`: 6 supplementary `.mat` datasets available in this repository.
+- `docs/current_experiment_report_zh.md`: latest Chinese experiment report, including runnable commands, KMD/OCL results, trend analysis, and mismatch analysis against arXiv v5.
 
-The script information in the `OCL_alg` file are as follows:
-- The `initialization.m` and `order_initial.m` files initialize `Q` and `order`, respectively.
-- The `OCL_main.m` file is the main component of the OCL algorithm and executes the outer loop.
-- The `INOCL.m` file implements the inner loop function of the OCL algorithm.
-- The `Order_choose.m` file and the `Order_reset.m` file are responsible for learning the order and modifying the order of the original dataset, respectively.
+## Setup
 
-Finally, the `Execute_Clustering.m` file executes the entire OCL algorithm on the provided dataset.
+```bash
+uv sync
+```
 
-# How to run
- - Ensure that the `OCL_Source_Code` folder has been added to the execution path by right-clicking the folder, selecting `Add to Path`, and then left-clicking `Selected Folders and Subfolders`.
- - Run the `Execute_Clustering.m` file, and the results will be displayed in the command line window.
+## Run Experiments
+
+Run OCL on one dataset:
+
+```bash
+uv run ocl-run --dataset NS --runs 10 --seed 25
+```
+
+Run OCL on all 12 main datasets:
+
+```bash
+uv run ocl-run --all --runs 10 --seed 25
+```
+
+Run the currently supported baseline and OCL:
+
+```bash
+uv run ocl-run --all --runs 10 --seed 25 --methods all
+```
+
+Run the supplementary datasets:
+
+```bash
+uv run ocl-run --all --data-root OCL_Source_Code/Supp_data --runs 10 --seed 25 --methods all
+```
+
+Show learned orders from the last OCL run:
+
+```bash
+uv run ocl-run --dataset VT --runs 1 --seed 25 --show-orders
+```
+
+## Current Scope
+
+The runnable methods are:
+
+- `OCL`: Python port of the value-order learning clustering algorithm.
+- `KMD`: traditional k-modes baseline with Hamming distance.
+
+The implemented metrics are `CA`, `ARI`, and `NMI`. The latest experiment report explains why exact numeric equality with the paper is not expected and which datasets currently deviate most from the paper trend.
