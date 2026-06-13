@@ -103,7 +103,11 @@
 
 **结论**: OCL 全面超过传统 KMD（CA +0.064, ARI +0.076）
 
+![OCL vs KMD](../results/figures/ocl_vs_kmd.png)
+
 **与论文对比**: CA 平均差 0.023，CMP 平均差 0.011 → **成功复现**
+
+![Paper vs Ours](../results/figures/paper_vs_ours.png)
 
 ---
 
@@ -117,6 +121,8 @@
 | 迭代更新 order | -0.010 | |
 | Order 信息本身 | -0.020 | |
 
+![消融实验](../results/figures/ablation.png)
+
 **名义/有序属性消融 (Table 10)**:
 
 | 变体 | 做法 | 结果 |
@@ -125,6 +131,8 @@
 | RNRO | 名义用 Hamming，有序用自然 order | LNRO > RNRO 在 7/9 数据集 |
 
 → 与论文完全吻合，验证了名义属性也包含可学的 order 信息
+
+![LNRO/RNRO](../results/figures/lnro_rnro.png)
 
 **Wilcoxon 检验** (p < 0.05):
 
