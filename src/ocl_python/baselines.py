@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .data import encode_features
-from .metrics import adjusted_rand_index, clustering_accuracy, normalized_mutual_information
+from .metrics import adjusted_rand_index, clustering_accuracy, clustering_compactness, normalized_mutual_information
 
 
 @dataclass(slots=True)
@@ -14,6 +14,7 @@ class KModesResult:
     ca: float | None = None
     ari: float | None = None
     nmi: float | None = None
+    cmp: float | None = None
 
 
 def _choose_unique_modes(X: np.ndarray, k: int, rng: np.random.RandomState) -> np.ndarray:
@@ -89,4 +90,5 @@ class KModes:
             result.ca = clustering_accuracy(result.assignments, true_labels)
             result.ari = adjusted_rand_index(result.assignments, true_labels)
             result.nmi = normalized_mutual_information(true_labels, result.assignments)
+        result.cmp = clustering_compactness(X, result.assignments, num_values)
         return result

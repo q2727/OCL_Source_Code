@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .data import decode_orders, encode_features
-from .metrics import adjusted_rand_index, clustering_accuracy, normalized_mutual_information
+from .metrics import adjusted_rand_index, clustering_accuracy, clustering_compactness, normalized_mutual_information
 
 
 @dataclass(slots=True)
@@ -17,6 +17,7 @@ class OCLResult:
     ca: float | None = None
     ari: float | None = None
     nmi: float | None = None
+    cmp: float | None = None
 
 
 def _distance_matrix(num_values: int) -> np.ndarray:
@@ -114,12 +115,75 @@ def _sample_cluster_distances(
     mode_probs: list[np.ndarray],
     distance_matrices: list[np.ndarray],
 ) -> np.ndarray:
+    """Expected distance to each cluster, weighted by the value-probability
+    distribution (full OCL — probability-aware distance)."""
     n_samples, n_attrs = X.shape
     k = mode_probs[0].shape[0]
     distances = np.zeros((n_samples, k), dtype=np.float64)
     for attr in range(n_attrs):
         attr_dists = distance_matrices[attr][X[:, attr]]
         distances += attr_dists @ mode_probs[attr].T
+    return distances / float(n_attrs)
+
+
+def _hard_mode_distances(
+    X: np.ndarray,
+    mode_probs: list[np.ndarray],
+    distance_matrices: list[np.ndarray],
+) -> np.ndarray:
+    """Distance to each cluster's *mode* (OCL-I: equidistant order distance
+    without probability weighting)."""
+    n_samples, n_attrs = X.shape
+    k = mode_probs[0].shape[0]
+    distances = np.zeros((n_samples, k), dtype=np.float64)
+    for attr in range(n_attrs):
+        # Most frequent value per cluster
+        modes_attr = np.argmax(mode_probs[attr], axis=1)
+        for cluster in range(k):
+            distances[:, cluster] += distance_matrices[attr][
+                X[:, attr], modes_attr[cluster]
+            ]
+    return distances / float(n_attrs)
+
+
+def _mixed_nom_ord_distances(
+    X: np.ndarray,
+    mode_probs: list[np.ndarray],
+    distance_matrices: list[np.ndarray],
+    nominal_attrs: list[int],
+) -> np.ndarray:
+    """Hamming for nominal attributes, order distance for ordinal (RNRO)."""
+    n_samples, n_attrs = X.shape
+    k = mode_probs[0].shape[0]
+    distances = np.zeros((n_samples, k), dtype=np.float64)
+    nominal_set = set(nominal_attrs)
+    for attr in range(n_attrs):
+        if attr in nominal_set:
+            modes_attr = np.argmax(mode_probs[attr], axis=1)
+            for cluster in range(k):
+                distances[:, cluster] += (
+                    X[:, attr] != modes_attr[cluster]
+                ).astype(np.float64)
+        else:
+            attr_dists = distance_matrices[attr][X[:, attr]]
+            distances += attr_dists @ mode_probs[attr].T
+    return distances / float(n_attrs)
+
+
+def _hamming_distances(
+    X: np.ndarray,
+    mode_probs: list[np.ndarray],
+) -> np.ndarray:
+    """Traditional Hamming distance to cluster modes (OCL-III: no order info)."""
+    n_samples, n_attrs = X.shape
+    k = mode_probs[0].shape[0]
+    distances = np.zeros((n_samples, k), dtype=np.float64)
+    for attr in range(n_attrs):
+        modes_attr = np.argmax(mode_probs[attr], axis=1)
+        for cluster in range(k):
+            distances[:, cluster] += (
+                X[:, attr] != modes_attr[cluster]
+            ).astype(np.float64)
     return distances / float(n_attrs)
 
 
@@ -166,6 +230,38 @@ def _choose_orders(
     return final_orders
 
 
+def _choose_orders_nominal(
+    assignments: np.ndarray,
+    mode_probs: list[np.ndarray],
+    distance_matrices: list[np.ndarray],
+    nominal_attrs: list[int],
+) -> list[np.ndarray]:
+    """Like _choose_orders but only reorders nominal attributes (LNRO)."""
+    n_samples = assignments.size
+    k = mode_probs[0].shape[0]
+    cluster_weights = np.bincount(assignments, minlength=k).astype(np.float64) / float(n_samples)
+    n_attrs = len(mode_probs)
+    final_orders: list[np.ndarray] = []
+
+    for attr, attr_probs in enumerate(mode_probs):
+        num_values = attr_probs.shape[1]
+        if attr not in nominal_attrs:
+            final_orders.append(np.arange(num_values, dtype=np.int64))
+            continue
+        cluster_rankings = np.zeros((k, num_values), dtype=np.float64)
+        for cluster in range(k):
+            significance = np.zeros(num_values, dtype=np.float64)
+            for value in range(num_values):
+                cost = float(distance_matrices[attr][value] @ attr_probs[cluster])
+                if cost == 0.0:
+                    cost = 1e-6
+                significance[value] = attr_probs[cluster, value] / cost
+            cluster_rankings[cluster] = _interleaved_rank_order(significance)
+        combined = cluster_weights @ cluster_rankings
+        final_orders.append(np.argsort(combined, kind="mergesort"))
+    return final_orders
+
+
 def _apply_orders(
     X: np.ndarray,
     orders: list[np.ndarray],
@@ -191,10 +287,21 @@ def _inner_loop(
     init_assignments: np.ndarray,
     distance_matrices: list[np.ndarray],
     objective_history: list[float],
+    distance_fn=_sample_cluster_distances,
 ) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Run the inner assignment–update loop to convergence.
+
+    ``distance_fn`` controls which distance metric is used:
+    - ``_sample_cluster_distances`` → full OCL (probability-aware)
+    - ``_hard_mode_distances``        → OCL-I (equidistant, no prob weighting)
+    - ``_hamming_distances``          → OCL-III (Hamming, no order info)
+    """
     assignments = init_assignments.copy()
     while True:
-        distances = _sample_cluster_distances(X, mode_probs, distance_matrices)
+        if distance_fn is _hamming_distances:
+            distances = distance_fn(X, mode_probs)
+        else:
+            distances = distance_fn(X, mode_probs, distance_matrices)
         winners = distances.argmin(axis=1)
         changed = not np.array_equal(winners, assignments)
         assignments = winners
@@ -206,15 +313,44 @@ def _inner_loop(
 
 
 class OCL:
+    """Order-learning clustering for categorical data.
+
+    Parameters
+    ----------
+    max_outer_loops : int
+        Maximum number of outer (order-learning) iterations.
+    max_init_loops : int
+        Maximum k-modes iterations during initialisation.
+    seed : int or None
+        Random seed.
+    variant : str
+        Ablation variant:
+
+        - ``"full"`` — complete OCL with probability-aware order distance
+          and iterative order learning.
+        - ``"ocl1"`` — OCL-I: equidistant order distance **without**
+          probability weighting (hard mode distance).
+        - ``"ocl2"`` — OCL-II: same as OCL-I but order is computed **once**
+          and never updated (single outer pass).
+        - ``"ocl3"`` — OCL-III: traditional Hamming distance, no order
+          information (essentially KMD).
+    """
+
     def __init__(
         self,
         max_outer_loops: int = 50,
         max_init_loops: int = 50,
         seed: int | None = None,
+        variant: str = "full",
+        nominal_attrs: list[int] | None = None,
     ) -> None:
+        if variant not in ("full", "ocl1", "ocl2", "ocl3", "lnro", "rnro"):
+            raise ValueError(f"Unknown variant {variant!r}.")
         self.max_outer_loops = max_outer_loops
         self.max_init_loops = max_init_loops
         self.seed = seed
+        self.variant = variant
+        self.nominal_attrs = nominal_attrs or []
 
     def fit_predict(
         self,
@@ -235,6 +371,26 @@ class OCL:
         distance_matrices = [_distance_matrix(int(m)) for m in num_values]
         rng = np.random.RandomState(self.seed)
 
+        # --- Select the distance function based on variant ---
+        if self.variant == "ocl3":
+            distance_fn = _hamming_distances
+            outer_loop_limit = 0   # No order learning at all
+        elif self.variant == "ocl1":
+            distance_fn = _hard_mode_distances
+            outer_loop_limit = self.max_outer_loops
+        elif self.variant == "ocl2":
+            distance_fn = _hard_mode_distances
+            outer_loop_limit = 0   # Order computed once, then fixed
+        elif self.variant == "rnro":
+            distance_fn = _sample_cluster_distances  # placeholder, overridden below
+            outer_loop_limit = 0   # No order learning, use mixed distance
+        elif self.variant == "lnro":
+            distance_fn = _sample_cluster_distances
+            outer_loop_limit = self.max_outer_loops
+        else:  # "full"
+            distance_fn = _sample_cluster_distances
+            outer_loop_limit = self.max_outer_loops
+
         modes, previous_outer_assignments = _kmodes_initialization(
             X, k, num_values, rng, self.max_init_loops
         )
@@ -244,10 +400,14 @@ class OCL:
         order_update_iterations: list[int] = []
         order_labels = [values.copy() for values in original_values]
 
-        # MATLAB's Order_initial receives an all-zero partition and therefore
-        # effectively preserves the original coding order.
+        # RNRO: mixed distance — Hamming for nominal, order dist for ordinal
+        if self.variant == "rnro":
+            def _rnro_dist(X, mp, dm):
+                return _mixed_nom_ord_distances(X, mp, dm, self.nominal_attrs)
+            distance_fn = _rnro_dist
+
         outer_loops = 0
-        while outer_loops <= self.max_outer_loops:
+        while outer_loops <= outer_loop_limit:
             outer_loops += 1
             current_assignments, mode_probs = _inner_loop(
                 X,
@@ -257,12 +417,21 @@ class OCL:
                 current_assignments,
                 distance_matrices,
                 objective_history,
+                distance_fn=distance_fn,
             )
+            if outer_loop_limit == 0:
+                break
+
             if np.array_equal(previous_outer_assignments, current_assignments):
                 break
 
             previous_outer_assignments = current_assignments.copy()
-            learned_orders = _choose_orders(current_assignments, mode_probs, distance_matrices)
+            if self.variant == "lnro":
+                learned_orders = _choose_orders_nominal(
+                    current_assignments, mode_probs, distance_matrices, self.nominal_attrs
+                )
+            else:
+                learned_orders = _choose_orders(current_assignments, mode_probs, distance_matrices)
             X, order_labels = _apply_orders(X, learned_orders, order_labels)
             order_update_iterations.append(len(objective_history))
 
@@ -277,4 +446,5 @@ class OCL:
             result.ca = clustering_accuracy(result.assignments, true_labels)
             result.ari = adjusted_rand_index(result.assignments, true_labels)
             result.nmi = normalized_mutual_information(true_labels, result.assignments)
+        result.cmp = clustering_compactness(encoded_features, result.assignments, num_values)
         return result

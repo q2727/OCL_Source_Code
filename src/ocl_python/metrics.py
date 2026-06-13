@@ -56,6 +56,52 @@ def adjusted_rand_index(labels_a: np.ndarray, labels_b: np.ndarray) -> float:
     return float((sum_comb - expected) / denominator)
 
 
+def clustering_compactness(
+    X: np.ndarray,
+    assignments: np.ndarray,
+    num_values: np.ndarray,
+) -> float:
+    """CMP: Clustering coMPactness — an internal entropy-based index (Eq. 17).
+
+    For each cluster and each attribute, the normalised entropy of the
+    value distribution is computed.  CMP is the average across all clusters
+    and attributes.  **Lower is better** (range [0, 1]).
+
+    .. math::
+        CMP = \\frac{1}{s \\cdot k} \\sum_{j=1}^{k} \\sum_{r=1}^{s}
+              \\frac{H(C_j, r)}{\\log V_r}
+
+    where :math:`H(C_j, r)` is the Shannon entropy of the value
+    distribution of attribute *r* within cluster *j*, and :math:`V_r`
+    is the number of distinct values of attribute *r*.
+    """
+    X_arr = np.asarray(X, dtype=np.int64)
+    assignments_arr = np.asarray(assignments, dtype=np.int64).ravel()
+    num_values_arr = np.asarray(num_values, dtype=np.int64).ravel()
+
+    n_attrs = X_arr.shape[1]
+    k = int(assignments_arr.max())
+
+    total_norm_entropy = 0.0
+    for cluster in range(1, k + 1):
+        mask = assignments_arr == cluster
+        if not np.any(mask):
+            continue
+        cluster_data = X_arr[mask]
+        for attr in range(n_attrs):
+            counts = np.bincount(
+                cluster_data[:, attr], minlength=int(num_values_arr[attr])
+            ).astype(np.float64)
+            probs = counts / counts.sum()
+            nz = probs > 0.0
+            entropy = -np.sum(probs[nz] * np.log(probs[nz]))
+            max_entropy = np.log(float(num_values_arr[attr]))
+            if max_entropy > 0.0:
+                total_norm_entropy += entropy / max_entropy
+
+    return float(total_norm_entropy / (n_attrs * k))
+
+
 def normalized_mutual_information(labels_a: np.ndarray, labels_b: np.ndarray) -> float:
     a = np.asarray(labels_a).ravel()
     b = np.asarray(labels_b).ravel()

@@ -10,7 +10,14 @@ from .algorithm import OCL
 from .baselines import KModes
 from .data import list_available_datasets, load_dataset
 
-SUPPORTED_METHODS = ("kmd", "ocl")
+SUPPORTED_METHODS = ("kmd", "ocl", "ocl1", "ocl2", "ocl3", "lnro", "rnro")
+
+# Nominal attribute counts per dataset (from paper Table 2).
+# First s_n columns are assumed nominal, the rest ordinal.
+DATASET_NOMINAL_COUNTS: dict[str, int] = {
+    "NS": 1, "AP": 6, "CS": 1, "HR": 2, "BC": 5,
+    "LG": 15, "CR": 7, "OB": 6, "BM": 6,
+}
 
 
 @dataclass(slots=True)
@@ -23,6 +30,8 @@ class RunSummary:
     ari_std: float
     nmi_mean: float
     nmi_std: float
+    cmp_mean: float
+    cmp_std: float
 
 
 def _format_metric(mean: float, std: float) -> str:
@@ -46,6 +55,10 @@ def _parse_methods(methods: str) -> list[str]:
 def _build_model(method: str, seed: int, max_outer_loops: int, max_init_loops: int):
     if method == "ocl":
         return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed)
+    if method in ("ocl1", "ocl2", "ocl3"):
+        return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed, variant=method)
+    if method in ("lnro", "rnro"):
+        return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed, variant=method)
     if method == "kmd":
         return KModes(max_loops=max_init_loops, seed=seed)
     raise ValueError(f"Unsupported method: {method}")
@@ -65,6 +78,7 @@ def _run_dataset(
     ca_scores: list[float] = []
     ari_scores: list[float] = []
     nmi_scores: list[float] = []
+    cmp_scores: list[float] = []
     last_orders: list[list[int]] = []
 
     for run_idx in range(runs):
@@ -74,6 +88,9 @@ def _run_dataset(
             max_outer_loops=max_outer_loops,
             max_init_loops=max_init_loops,
         )
+        if method in ("lnro", "rnro") and dataset_name in DATASET_NOMINAL_COUNTS:
+            s_n = DATASET_NOMINAL_COUNTS[dataset_name]
+            model.nominal_attrs = list(range(s_n))
         result = model.fit_predict(
             dataset.features,
             true_labels=dataset.labels,
@@ -82,7 +99,8 @@ def _run_dataset(
         ca_scores.append(float(result.ca))
         ari_scores.append(float(result.ari))
         nmi_scores.append(float(result.nmi))
-        if method == "ocl":
+        cmp_scores.append(float(result.cmp))
+        if method in ("ocl", "ocl1", "ocl2", "lnro"):
             last_orders = result.learned_orders
 
     summary = RunSummary(
@@ -94,6 +112,8 @@ def _run_dataset(
         ari_std=float(np.std(ari_scores)),
         nmi_mean=float(np.mean(nmi_scores)),
         nmi_std=float(np.std(nmi_scores)),
+        cmp_mean=float(np.mean(cmp_scores)),
+        cmp_std=float(np.std(cmp_scores)),
     )
     return summary, last_orders
 
@@ -101,9 +121,9 @@ def _run_dataset(
 def _print_summaries(summaries: list[RunSummary]) -> None:
     show_method = len({summary.method for summary in summaries}) > 1
     if show_method:
-        print("Dataset | Method | CA | ARI | NMI\n--- | --- | --- | --- | ---")
+        print("Dataset | Method | CA | ARI | NMI | CMP\n--- | --- | --- | --- | --- | ---")
     else:
-        print("Dataset | CA | ARI | NMI\n--- | --- | --- | ---")
+        print("Dataset | CA | ARI | NMI | CMP\n--- | --- | --- | --- | ---")
 
     for summary in summaries:
         row = [summary.dataset]
@@ -114,6 +134,7 @@ def _print_summaries(summaries: list[RunSummary]) -> None:
                 _format_metric(summary.ca_mean, summary.ca_std),
                 _format_metric(summary.ari_mean, summary.ari_std),
                 _format_metric(summary.nmi_mean, summary.nmi_std),
+                _format_metric(summary.cmp_mean, summary.cmp_std),
             ]
         )
         print(" | ".join(row))
