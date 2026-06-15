@@ -10,7 +10,7 @@ from .algorithm import OCL
 from .baselines import KModes
 from .data import list_available_datasets, load_dataset
 
-SUPPORTED_METHODS = ("kmd", "ocl", "ocl1", "ocl2", "ocl3", "lnro", "rnro")
+SUPPORTED_METHODS = ("kmd", "ocl", "ocl1", "ocl2", "ocl3", "lnro", "rnro", "wocl")
 
 # Nominal attribute counts per dataset (from paper Table 2).
 # First s_n columns are assumed nominal, the rest ordinal.
@@ -52,13 +52,42 @@ def _parse_methods(methods: str) -> list[str]:
     return parsed
 
 
-def _build_model(method: str, seed: int, max_outer_loops: int, max_init_loops: int):
+def _build_model(
+    method: str,
+    seed: int,
+    max_outer_loops: int,
+    max_init_loops: int,
+    *,
+    weight_alpha: float,
+    weight_gamma: float,
+    weight_min: float | None,
+    weight_delay: int,
+    weight_mix: float,
+    weight_guard: str,
+    weight_entropy_min: float,
+    weight_objective_tol: float,
+):
     if method == "ocl":
         return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed)
     if method in ("ocl1", "ocl2", "ocl3"):
         return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed, variant=method)
     if method in ("lnro", "rnro"):
         return OCL(max_outer_loops=max_outer_loops, max_init_loops=max_init_loops, seed=seed, variant=method)
+    if method == "wocl":
+        return OCL(
+            max_outer_loops=max_outer_loops,
+            max_init_loops=max_init_loops,
+            seed=seed,
+            variant="wocl",
+            weight_alpha=weight_alpha,
+            weight_gamma=weight_gamma,
+            weight_min=weight_min,
+            weight_delay=weight_delay,
+            weight_mix=weight_mix,
+            weight_guard=weight_guard,
+            weight_entropy_min=weight_entropy_min,
+            weight_objective_tol=weight_objective_tol,
+        )
     if method == "kmd":
         return KModes(max_loops=max_init_loops, seed=seed)
     raise ValueError(f"Unsupported method: {method}")
@@ -72,7 +101,15 @@ def _run_dataset(
     seed: int,
     max_outer_loops: int,
     max_init_loops: int,
-) -> tuple[RunSummary, list[list[int]]]:
+    weight_alpha: float,
+    weight_gamma: float,
+    weight_min: float | None,
+    weight_delay: int,
+    weight_mix: float,
+    weight_guard: str,
+    weight_entropy_min: float,
+    weight_objective_tol: float,
+) -> tuple[RunSummary, list[list[int]], list[float] | None]:
     dataset = load_dataset(dataset_name, data_root=data_root)
 
     ca_scores: list[float] = []
@@ -80,6 +117,7 @@ def _run_dataset(
     nmi_scores: list[float] = []
     cmp_scores: list[float] = []
     last_orders: list[list[int]] = []
+    last_weights: list[float] | None = None
 
     for run_idx in range(runs):
         model = _build_model(
@@ -87,6 +125,14 @@ def _run_dataset(
             seed=seed + run_idx,
             max_outer_loops=max_outer_loops,
             max_init_loops=max_init_loops,
+            weight_alpha=weight_alpha,
+            weight_gamma=weight_gamma,
+            weight_min=weight_min,
+            weight_delay=weight_delay,
+            weight_mix=weight_mix,
+            weight_guard=weight_guard,
+            weight_entropy_min=weight_entropy_min,
+            weight_objective_tol=weight_objective_tol,
         )
         if method in ("lnro", "rnro") and dataset_name in DATASET_NOMINAL_COUNTS:
             s_n = DATASET_NOMINAL_COUNTS[dataset_name]
@@ -100,8 +146,10 @@ def _run_dataset(
         ari_scores.append(float(result.ari))
         nmi_scores.append(float(result.nmi))
         cmp_scores.append(float(result.cmp))
-        if method in ("ocl", "ocl1", "ocl2", "lnro"):
+        if method in ("ocl", "ocl1", "ocl2", "lnro", "wocl"):
             last_orders = result.learned_orders
+        if method == "wocl":
+            last_weights = result.attribute_weights
 
     summary = RunSummary(
         dataset=dataset.name,
@@ -115,7 +163,16 @@ def _run_dataset(
         cmp_mean=float(np.mean(cmp_scores)),
         cmp_std=float(np.std(cmp_scores)),
     )
-    return summary, last_orders
+    return summary, last_orders, last_weights
+
+
+def _parse_weight_min(value: str) -> float | None:
+    if value.lower() == "auto":
+        return None
+    parsed = float(value)
+    if parsed < 0.0:
+        raise argparse.ArgumentTypeError("--weight-min must be non-negative or 'auto'.")
+    return parsed
 
 
 def _print_summaries(summaries: list[RunSummary]) -> None:
@@ -154,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--methods",
         default="ocl",
-        help="Comma-separated methods to run: ocl, kmd, or all. Default: ocl.",
+        help="Comma-separated methods to run: ocl, wocl, kmd, or all. Default: ocl.",
     )
     parser.add_argument(
         "--seed",
@@ -179,6 +236,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the learned order of each attribute from the last run.",
     )
+    parser.add_argument(
+        "--weight-alpha",
+        type=float,
+        default=0.5,
+        help="WOCL smoothing factor for attribute-weight updates. Default: 0.5.",
+    )
+    parser.add_argument(
+        "--weight-gamma",
+        type=float,
+        default=1.0,
+        help="WOCL sharpness exponent for entropy-gain scores. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--weight-min",
+        type=_parse_weight_min,
+        default=None,
+        help="WOCL minimum attribute weight, or 'auto' for 0.01 / n_attrs. Default: auto.",
+    )
+    parser.add_argument(
+        "--weight-delay",
+        type=int,
+        default=0,
+        help="WOCL outer iterations to wait before updating attribute weights. Default: 0.",
+    )
+    parser.add_argument(
+        "--weight-mix",
+        type=float,
+        default=1.0,
+        help="WOCL distance mix: 0 uses uniform OCL distance, 1 uses learned weights. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--weight-guard",
+        choices=("none", "entropy", "objective", "objective_entropy"),
+        default="none",
+        help="WOCL guard for accepting weight updates. Default: none.",
+    )
+    parser.add_argument(
+        "--weight-entropy-min",
+        type=float,
+        default=0.7,
+        help="Minimum normalized weight entropy when --weight-guard entropy is used. Default: 0.7.",
+    )
+    parser.add_argument(
+        "--weight-objective-tol",
+        type=float,
+        default=0.0,
+        help="Relative tolerance for accepting objective guard updates. Default: 0.0.",
+    )
     return parser
 
 
@@ -197,7 +302,7 @@ def main() -> None:
     summaries: list[RunSummary] = []
     for dataset_name in datasets:
         for method in methods:
-            summary, orders = _run_dataset(
+            summary, orders, weights = _run_dataset(
                 dataset_name=dataset_name,
                 method=method,
                 data_root=data_root,
@@ -205,12 +310,23 @@ def main() -> None:
                 seed=args.seed,
                 max_outer_loops=args.max_outer_loops,
                 max_init_loops=args.max_init_loops,
+                weight_alpha=args.weight_alpha,
+                weight_gamma=args.weight_gamma,
+                weight_min=args.weight_min,
+                weight_delay=args.weight_delay,
+                weight_mix=args.weight_mix,
+                weight_guard=args.weight_guard,
+                weight_entropy_min=args.weight_entropy_min,
+                weight_objective_tol=args.weight_objective_tol,
             )
             summaries.append(summary)
-            if args.show_orders and method == "ocl":
-                print(f"\nLearned orders for {dataset_name}:")
+            if args.show_orders and method in ("ocl", "wocl"):
+                print(f"\nLearned orders for {dataset_name} ({method.upper()}):")
                 for attr_idx, attr_order in enumerate(orders, start=1):
                     print(f"  attr_{attr_idx}: {attr_order}")
+                if weights is not None:
+                    formatted = ", ".join(f"{weight:.4f}" for weight in weights)
+                    print(f"  attribute_weights: [{formatted}]")
 
     print()
     _print_summaries(summaries)

@@ -1,5 +1,7 @@
 .venv/
 .uv-cache/
+.mpl-cache/
 __pycache__/
 *.egg-info/
 build/
+experiments/

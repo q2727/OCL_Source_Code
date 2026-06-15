@@ -35,6 +35,18 @@ Run the currently supported baseline and OCL:
 uv run ocl-run --all --runs 10 --seed 25 --methods all
 ```
 
+Run Attribute-Weighted OCL (WOCL):
+
+```bash
+uv run ocl-run --dataset NS --runs 10 --seed 25 --methods ocl,wocl
+```
+
+Tune WOCL attribute-weight updates:
+
+```bash
+uv run ocl-run --dataset NS --runs 10 --seed 25 --methods wocl --weight-alpha 0.5 --weight-gamma 1.0 --weight-min auto
+```
+
 Run the supplementary datasets:
 
 ```bash
@@ -52,6 +64,9 @@ uv run ocl-run --dataset VT --runs 1 --seed 25 --show-orders
 The runnable methods are:
 
 - `OCL`: Python port of the value-order learning clustering algorithm.
+- `WOCL`: OCL extension with unsupervised adaptive attribute weights.
+- `OCL-I` / `OCL-II` / `OCL-III`: ablation variants.
+- `LNRO` / `RNRO`: mixed nominal/ordinal variants for supported datasets.
 - `KMD`: traditional k-modes baseline with Hamming distance.
 
-The implemented metrics are `CA`, `ARI`, and `NMI`. The latest experiment report explains why exact numeric equality with the paper is not expected and which datasets currently deviate most from the paper trend.
+The implemented metrics are `CA`, `ARI`, `NMI`, and `CMP`. The latest experiment report explains why exact numeric equality with the paper is not expected and which datasets currently deviate most from the paper trend.
